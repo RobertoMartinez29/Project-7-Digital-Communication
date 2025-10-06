@@ -1,0 +1,167 @@
+#include <msp430.h>
+#include <stdio.h>
+
+#define GreenLED BIT6
+#define RedLED   BIT0
+#define BUTTON   BIT3
+
+volatile char letter;
+volatile char letterFlag = 0;
+volatile char done = 1;
+volatile char LED_ON = 0;
+volatile char green = 0;
+volatile unsigned char numberOfPresses = 0;
+volatile char print = 0;
+
+char nletter = 0;
+char c_numberOfPresses[2] = {0, 0};
+char message[] = "Hola, Doctor Gilmour!";
+unsigned char tens = 0;
+unsigned char ones = 0;
+
+
+void main(void)
+{
+  WDTCTL = WDTPW | WDTHOLD;
+
+  BCSCTL1 = CALBC1_1MHZ;  // adjust the clock
+  DCOCTL = CALDCO_1MHZ;
+
+  P1DIR |= GreenLED | RedLED;
+  P1OUT &= ~(GreenLED | RedLED);
+  P1SEL |= BIT1 | BIT2; 
+  P1SEL2 |= BIT1 | BIT2;
+
+  P1DIR &= ~BUTTON;
+  P1REN |= BUTTON;
+  P1OUT |= BUTTON;
+  P1IES |= BUTTON;
+  P1IE  |= BUTTON;
+
+  TACCR0 = 65000;
+  TA0CCTL0 = CCIE;
+  TACTL = TASSEL_2 + MC_0;
+
+  UCA0CTL1 |=UCSWRST | UCSSEL_2;  // settup the UART mode
+  // Enable SW reset, use SMCLK
+
+  UCA0BR0 = 104; // low bit of UCBRx is 104;
+  UCA0BR1 = 0;   // high bit of UCBRx is 0;
+  UCA0MCTL = UCBRS_1;
+  // second modulation stage select is 1
+  // boud rate = 9600
+
+  UCA0CTL1 &= ~UCSWRST;
+  //Clear SW reset, resume operation
+
+  IE2 |= UCA0RXIE; //enable interrupt
+
+  _enable_interrupt();
+
+  while (1)
+  {
+    if (letterFlag)
+    {
+      P1IE &= ~BUTTON;
+      done = 0;
+      letterFlag = 0;
+
+      switch (letter)
+      {
+        case 'g':
+          P1OUT ^= GreenLED;
+          break;
+
+
+        case 'r':
+          P1OUT ^= RedLED;
+          break;
+
+        default:
+          break;
+      }
+
+      P1IE  |= BUTTON;
+
+    }
+
+    else if (print)
+    {
+      P1IE &= ~BUTTON;
+      done = 0;
+
+      while (message[nletter] != '\0')
+      {
+        while (!(IFG2 & UCA0TXIFG));
+
+        UCA0TXBUF = message[nletter++];
+      }
+
+      while (!(IFG2 & UCA0TXIFG));
+      UCA0TXBUF = ' ';
+
+      nletter = 0;
+
+      ones = numberOfPresses % 10;
+      tens = (numberOfPresses / 10) % 10;
+      c_numberOfPresses[0] = '0' + tens;
+      c_numberOfPresses[1] = '0' + ones;
+
+
+      while (!(IFG2 & UCA0TXIFG));
+      UCA0TXBUF = c_numberOfPresses[0];
+      while (!(IFG2 & UCA0TXIFG));
+      UCA0TXBUF = c_numberOfPresses[1];
+
+      while (!(IFG2 & UCA0TXIFG));
+      UCA0TXBUF = '\r';
+      while (!(IFG2 & UCA0TXIFG));
+      UCA0TXBUF = '\n';
+
+      nletter = 0;
+      print = 0;
+
+      done = 1;
+      P1IE  |= BUTTON;
+    }
+
+    if (done)
+    {
+      LPM0;
+    }
+  }
+}
+
+#pragma vector=USCIAB0RX_VECTOR
+__interrupt void USCI0RX__ISR(void)
+{
+  letter = UCA0RXBUF;
+  letterFlag = 1;
+  __bic_SR_register_on_exit(LPM0_bits);
+}
+
+#pragma vector = TIMER0_A0_VECTOR
+__interrupt void TimerA (void)
+{
+  TACTL = TASSEL_2 + MC_0;
+
+  if (!(P1IN & BUTTON))
+  {
+    numberOfPresses++;
+    print = 1;
+    __bic_SR_register_on_exit(LPM0_bits);
+  }
+
+  P1IFG &= ~BUTTON;
+  P1IE |= BUTTON;
+}
+
+#pragma vector=PORT1_VECTOR
+__interrupt void Port_1(void) 
+{
+  TACCR0 = 50000;
+  TAR = 0;
+  TACTL = TASSEL_2 + MC_1;
+  P1IFG &= ~BUTTON;
+  P1IE &= ~BUTTON;
+}
