@@ -1,7 +1,7 @@
 #include <msp430.h>
 
 #define GreenLED BIT6
-#define RedLED   BIT1
+#define RedLED   BIT0
 
 volatile char letter;
 volatile char letterFlag = 0;
@@ -15,16 +15,16 @@ void main(void)
   WDTCTL = WDTPW | WDTHOLD;
 
   BCSCTL1 = CALBC1_1MHZ;  // adjust the clock
-  DCOCTL = CALBC1_1MHZ;
+  DCOCTL = CALDCO_1MHZ;
 
-  P1DIR = GreenLED | RedLED;
+  P1DIR |= GreenLED | RedLED;
   P1OUT &= (0x00);
-  P1SEL = BIT1 | BIT2; 
-  P1SEL = BIT1 | BIT2;
+  P1SEL |= BIT1 | BIT2; 
+  P1SEL2 |= BIT1 | BIT2;
 
   TACCR0 = 65000;
   TA0CCTL0 = CCIE;
-  TACTL = TASSEL_1 + MC_0;
+  TACTL = TASSEL_2 + MC_0;
 
   UCA0CTL1 |=UCSWRST | UCSSEL_2;  // settup the UART mode
   // Enable SW reset, use SMCLK
@@ -42,25 +42,29 @@ void main(void)
 
   _enable_interrupt();
 
-  while (1);
+  while (1)
   {
-    if (letterFlag == 1)
+    if (letterFlag)
     {
 
       done = 0;
+      letterFlag = 0;
 
       switch (letter)
       {
         case 'g':
           P1OUT |= GreenLED;
           green = 1;
-          TACTL = TASSEL_1 + MC_1;
+          TAR = 0;
+          TACTL = TASSEL_2 + MC_1;
           break;
 
 
         case 'r':
+          green = 0;
           P1OUT |= RedLED;
-          TACTL = TASSEL_1 + MC_1;
+          TAR = 0;
+          TACTL = TASSEL_2 + MC_1;
           break;
 
         default:
@@ -86,7 +90,7 @@ __interrupt void USCI0RX__ISR(void)
 #pragma vector = TIMER0_A0_VECTOR
 __interrupt void TimerA (void)
 {
-  if (GreenLED)
+  if (green)
   {
     P1OUT &= ~GreenLED;
   }
@@ -97,4 +101,5 @@ __interrupt void TimerA (void)
   }
 
   done = 1;
+  TACTL = TASSEL_2 + MC_0;
 }
