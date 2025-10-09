@@ -5,6 +5,7 @@
 #define RedLED   BIT0
 #define BUTTON   BIT3
 
+// runtime flags/state
 volatile char letter;
 volatile char letterFlag = 0;
 volatile char done = 1;
@@ -13,87 +14,79 @@ volatile char green = 0;
 volatile unsigned char numberOfPresses = 0;
 volatile char print = 0;
 
+// TX helpers
 char nletter = 0;
 char c_numberOfPresses[2] = {0, 0};
 char message[] = "Hola, Doctor Gilmour!";
 unsigned char tens = 0;
 unsigned char ones = 0;
 
-
 void main(void)
 {
-  WDTCTL = WDTPW | WDTHOLD;
+  WDTCTL = WDTPW | WDTHOLD;        // stop watchdog
 
-  BCSCTL1 = CALBC1_1MHZ;  // adjust the clock
-  DCOCTL = CALDCO_1MHZ;
+  BCSCTL1 = CALBC1_1MHZ;           // DCO @ 1 MHz
+  DCOCTL  = CALDCO_1MHZ;
 
-  P1DIR |= GreenLED | RedLED;
-  P1OUT &= ~(GreenLED | RedLED);
-  P1SEL |= BIT1 | BIT2; 
+  P1DIR |= GreenLED | RedLED;      // LEDs output
+  P1OUT &= ~(GreenLED | RedLED);   // LEDs off
+  P1SEL  |= BIT1 | BIT2;           // P1.1 RXD, P1.2 TXD
   P1SEL2 |= BIT1 | BIT2;
 
-  P1DIR &= ~BUTTON;
-  P1REN |= BUTTON;
-  P1OUT |= BUTTON;
-  P1IES |= BUTTON;
-  P1IE  |= BUTTON;
+  P1DIR &= ~BUTTON;                // button input
+  P1REN |= BUTTON;                 // pull resistor
+  P1OUT |= BUTTON;                 // pull-up
+  P1IES |= BUTTON;                 // high->low edge
+  P1IE  |= BUTTON;                 // enable P1.3 IRQ
 
-  TACCR0 = 65000;
-  TA0CCTL0 = CCIE;
-  TACTL = TASSEL_2 + MC_0;
+  TACCR0   = 65000;                // debounce / timer window
+  TA0CCTL0 = CCIE;                 // CCR0 interrupt
+  TACTL    = TASSEL_2 + MC_0;      // SMCLK, stop
 
-  UCA0CTL1 |=UCSWRST | UCSSEL_2;  // settup the UART mode
-  // Enable SW reset, use SMCLK
+  UCA0CTL1 |= UCSWRST | UCSSEL_2;  // hold USCI, SMCLK
+  // 9600 baud for 1 MHz SMCLK
+  UCA0BR0 = 104;                   // 1 MHz / 9600 ≈ 104.17
+  UCA0BR1 = 0;
+  UCA0MCTL = UCBRS_1;              // mod stage = 1
 
-  UCA0BR0 = 104; // low bit of UCBRx is 104;
-  UCA0BR1 = 0;   // high bit of UCBRx is 0;
-  UCA0MCTL = UCBRS_1;
-  // second modulation stage select is 1
-  // boud rate = 9600
+  UCA0CTL1 &= ~UCSWRST;            // release USCI
+  IE2 |= UCA0RXIE;                 // RX IRQ on
 
-  UCA0CTL1 &= ~UCSWRST;
-  //Clear SW reset, resume operation
-
-  IE2 |= UCA0RXIE; //enable interrupt
-
-  _enable_interrupt();
+  _enable_interrupt();             // GIE
 
   while (1)
   {
-    if (letterFlag)
+    if (letterFlag)                // UART command pending
     {
-      P1IE &= ~BUTTON;
+      P1IE &= ~BUTTON;             // mask button during work
       done = 0;
       letterFlag = 0;
 
-      switch (letter)
+      switch (letter)              // simple command parser
       {
-        case 'g':
+        case 'g':                  // toggle green
           P1OUT ^= GreenLED;
           break;
 
-
-        case 'r':
+        case 'r':                  // toggle red
           P1OUT ^= RedLED;
           break;
 
-        default:
+        default:                   // ignore others
           break;
       }
 
-      P1IE  |= BUTTON;
-
+      P1IE |= BUTTON;              // re-enable button
     }
 
-    else if (print)
+    else if (print)                // send message + count
     {
       P1IE &= ~BUTTON;
       done = 0;
 
       while (message[nletter] != '\0')
       {
-        while (!(IFG2 & UCA0TXIFG));
-
+        while (!(IFG2 & UCA0TXIFG)); // wait TX ready
         UCA0TXBUF = message[nletter++];
       }
 
@@ -102,12 +95,13 @@ void main(void)
 
       nletter = 0;
 
+      // split count into tens/ones
       ones = numberOfPresses % 10;
       tens = (numberOfPresses / 10) % 10;
       c_numberOfPresses[0] = '0' + tens;
       c_numberOfPresses[1] = '0' + ones;
 
-
+      // send two digits + CRLF
       while (!(IFG2 & UCA0TXIFG));
       UCA0TXBUF = c_numberOfPresses[0];
       while (!(IFG2 & UCA0TXIFG));
@@ -122,16 +116,17 @@ void main(void)
       print = 0;
 
       done = 1;
-      P1IE  |= BUTTON;
+      P1IE |= BUTTON;
     }
 
-    if (done)
+    if (done)                      // idle -> LPM0
     {
       LPM0;
     }
   }
 }
 
+// UART RX ISR: capture byte, flag work, wake CPU
 #pragma vector=USCIAB0RX_VECTOR
 __interrupt void USCI0RX__ISR(void)
 {
@@ -140,28 +135,30 @@ __interrupt void USCI0RX__ISR(void)
   __bic_SR_register_on_exit(LPM0_bits);
 }
 
+// TimerA CCR0 ISR: debounce end, count press, request print
 #pragma vector = TIMER0_A0_VECTOR
 __interrupt void TimerA (void)
 {
-  TACTL = TASSEL_2 + MC_0;
+  TACTL = TASSEL_2 + MC_0;         // stop timer
 
-  if (!(P1IN & BUTTON))
+  if (!(P1IN & BUTTON))            // still pressed?
   {
     numberOfPresses++;
-    print = 1;
+    print = 1;                     // trigger TX in main
     __bic_SR_register_on_exit(LPM0_bits);
   }
 
-  P1IFG &= ~BUTTON;
-  P1IE |= BUTTON;
+  P1IFG &= ~BUTTON;                // clear button IFG
+  P1IE  |= BUTTON;                 // re-arm P1.3 IRQ
 }
 
+// Port 1 ISR: button edge -> start debounce timer
 #pragma vector=PORT1_VECTOR
 __interrupt void Port_1(void) 
 {
-  TACCR0 = 50000;
+  TACCR0 = 50000;                  // debounce interval
   TAR = 0;
-  TACTL = TASSEL_2 + MC_1;
-  P1IFG &= ~BUTTON;
-  P1IE &= ~BUTTON;
+  TACTL = TASSEL_2 + MC_1;         // SMCLK, up mode
+  P1IFG &= ~BUTTON;                // clear IFG
+  P1IE  &= ~BUTTON;                // mask until timer
 }
